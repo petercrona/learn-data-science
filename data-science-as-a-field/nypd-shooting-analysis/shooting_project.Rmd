@@ -1,0 +1,250 @@
+---
+title: "ShootingProject"
+author: "Peter Crona"
+date: "2023-01-06"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(MASS)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Question
+
+Do male and female perpetrators commit crimes at different times of the day?
+
+# Get, clean and extract relevant data
+
+This analysis uses "NYPD Shooting Incident Data (Historic)", see [https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8](https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8) for details.
+
+For the sake of our analysis, we only need PERP_SEX, which contains M for male and F for female, and OCCUR_TIME which contains the time of day of the crime / shooting incident.
+
+```{r get_data}
+data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv") %>%
+  dplyr::select(OCCUR_TIME, PERP_SEX) %>%
+  drop_na() %>%
+  filter(PERP_SEX == "M" | PERP_SEX == "F")
+```
+
+# Visualize using boxplot
+
+We start by visualizing the data to see if we immediately can spot a difference:
+
+```{r boxplot}
+boxplot(OCCUR_TIME ~ PERP_SEX, data = data)
+```
+
+The visualization is not especially readable as we show time as seconds rather than hour of day. To make it more readable, we use hour of day rather than seconds.
+
+```{r add_hour}
+data_w_hour <- data %>% 
+  mutate(hour = hour(OCCUR_TIME))
+
+boxplot(hour ~ PERP_SEX, data = data_w_hour)
+```
+
+Based on visual inspection of above boxplot, it does not look like there's much of a difference.
+
+However, it might be that crimes do not follow a normal distribution. And we perhaps run into trouble due to hour of day being cyclic (mod 24). We can continue our visual inspection by plotting male and female crime times using a bar chart.
+
+To do so, we first group by (hour, gender) and get the count for each group and scale for the genders (so that the hour with most for a gender becomes 1 and the one with least 0, or 0.01 for better visualization). Then we plot it.
+
+```{r plotScaled, fig.width = 12}
+count_by_sex <- data_w_hour %>% count(hour, PERP_SEX)
+
+scale_001_to_1 <- function(x) {
+  0.01 + (x - min(x)) / (max(x) - min(x)) # note 0.01 added to avoid 0 height bar 
+}
+
+scaler <- function(x) {
+  x["n_scaled"] = scale_001_to_1(x["n"])
+  x
+}
+
+count_by_sex_w_scaled <- rbind(
+  scaler(count_by_sex %>% filter(PERP_SEX == "M")), 
+  scaler(count_by_sex %>% filter(PERP_SEX == "F")))
+
+ID <- 0:23 # Used to force all hours being shown
+ggplot(count_by_sex_w_scaled, aes(hour, n_scaled, fill = PERP_SEX)) + 
+  geom_bar(stat="identity", position="dodge", width=0.5) +
+  scale_x_continuous("hour", labels = as.character(ID), breaks = ID)
+```
+
+Now we can see a difference. For instance, women commit the fewest crimes around 13, whereas men commit the fewest crimes around 8. 
+
+However, it would be more readable to show percentage of crimes happening a specific hour for the gender, as this is easier to interpret. It works for us since the maximum percentage of crimes happening a specific hour is similar for men and women. We can update our scaler to rather calculate the percentage and plot again.
+
+```{r plotPercentage, fig.width = 12}
+count_by_sex <- data_w_hour %>% count(hour, PERP_SEX)
+
+calculate_percentage <- function(x) {
+  (x / sum(x)) * 100
+}
+
+scaler <- function(x) {
+  x["percentage"] = calculate_percentage(x["n"])
+  x
+}
+
+count_by_sex_w_percentage <- rbind(
+  scaler(count_by_sex %>% filter(PERP_SEX == "M")), 
+  scaler(count_by_sex %>% filter(PERP_SEX == "F")))
+
+ID <- 0:23 # Used to force all hours being shown
+ggplot(count_by_sex_w_percentage, aes(hour, percentage, fill = PERP_SEX)) + 
+  geom_bar(stat="identity", position="dodge", width=0.5) +
+  scale_x_continuous("hour", labels = as.character(ID), breaks = ID)
+```
+We can see that the peak for female perpetrators is even greater at 23 compared to men.
+
+To easier see when the most crimes are commited, we can sort the data:
+
+
+```{r male_female_sorted, fig.width = 12}
+only_female <- count_by_sex_w_percentage %>% filter(PERP_SEX == "F")
+only_male <- count_by_sex_w_percentage %>% filter(PERP_SEX == "M")
+
+only_female[order(only_female$percentage),] %>% map_df(rev)
+only_male[order(only_male$percentage),] %>% map_df(rev)
+
+ggplot(only_female, aes(x = reorder(hour, -percentage), percentage, fill = PERP_SEX)) + 
+  geom_bar(stat="identity", position="dodge", width=0.5)
+
+ggplot(only_male, aes(x = reorder(hour, -percentage), percentage, fill = PERP_SEX)) + 
+  geom_bar(stat="identity", position="dodge", width=0.5)
+```
+
+The tables and visualizations make it easy to see what hours of the day most crimes are committed by men and women.
+
+Another interesting observation is that it looks like we have something that resembles a normal distribution with mean hour 23. To explorer this further, we can plot using a custom order where 23 is in the "middle".
+
+```{r plotPercentageNormal, fig.width = 12}
+ggplot(only_female, aes(factor(hour, levels=c(11,12,13,
+                                              14,15,16,
+                                              17,18,19,
+                                              20,21,22,
+                                              23,0,1,
+                                              2,3,4,
+                                              5,6,7,
+                                              8,9,10)), percentage, fill = PERP_SEX)) + 
+  geom_bar(stat="identity", position="dodge", width=0.5)
+
+ggplot(only_male, aes(factor(hour, levels=c(11,12,13,
+                                            14,15,16,
+                                            17,18,19,
+                                            20,21,22,
+                                            23,0,1,
+                                            2,3,4,
+                                            5,6,7,
+                                            8,9,10)), percentage, fill = PERP_SEX)) + 
+  geom_bar(stat="identity", position="dodge", width=0.5)
+
+```
+
+This helps us see that there is a difference between men and women in when they commit crimes. Female perpetrators commit their crimes a bit more spread out, with the second and third peak at 2am and 5pm respectively. Men commit crimes more concentrated around 23 (the primary peak). Second and third peak is found at 9pm and 10pm for men.
+
+We can model our data using a normal distribution, so we can tell the likelihood of a crime being committed by male and female perpetrators at a specific time.
+
+# Model
+
+To model as a normal distribution we must change how we represent the time of day. We need to reflect that there is one hour between 23 and 0 for instance.
+
+An easy way is to take the offset from 23. So 23 becomes 0, 0 becomes 1, 22 becomes -1, etc. This will allow us to fit a normal distribution to the data, which we can then use for looking up the likelihood of a crime being committed.
+
+For women:
+
+```{r modelling_women, fig.width=12}
+only_female_w_centered_hour <- only_female %>%
+  mutate(hour_centered = case_when(
+    .$hour >= 11 & .$hour < 23 ~ .$hour - 23,
+    .$hour >= 0 & .$hour < 11 ~ .$hour + 1,
+    TRUE ~ 0
+  ))
+
+for_norm_dist <- only_female_w_centered_hour %>% uncount(n) %>% pull(hour_centered)
+
+fit <- fitdistr(for_norm_dist, "normal")
+ignore <- class(fit)
+
+para <- fit$estimate
+
+hist(for_norm_dist, prob = TRUE)
+curve(dnorm(x, para[1], para[2]), col = 2, add = TRUE)
+
+para
+```
+
+Same for men:
+
+```{r modelling_men, fig.width=12}
+only_male_w_centered_hour <- only_male %>%
+  mutate(hour_centered = case_when(
+    .$hour >= 11 & .$hour < 23 ~ .$hour - 23,
+    .$hour >= 0 & .$hour < 11 ~ .$hour + 1,
+    TRUE ~ 0
+  ))
+
+for_norm_dist <- only_male_w_centered_hour %>% uncount(n) %>% pull(hour_centered)
+
+fit <- fitdistr(for_norm_dist, "normal")
+ignore <- class(fit)
+
+para <- fit$estimate
+
+hist(for_norm_dist, prob = TRUE)
+curve(dnorm(x, para[1], para[2]), col = 2, add = TRUE)
+
+para
+
+```
+
+A normal distribution does not fit perfect as the distribution is slightly biased to crimes not happening during morning (6-10), especially for men. We can try a Weibull model. This model does not support <= 0, so we must change our scale. We can do so by counting hours after 11 + 2. So 11 becomes 2 and 12 becomes 3, etc.
+
+```{r modelling_weibull, fig.width=12}
+
+only_male_w_centered_hour <- only_male %>%
+  mutate(hour_centered = case_when(
+    .$hour >= 11 & .$hour <= 23 ~ 2 + .$hour - 11,
+    .$hour >= 0 & .$hour < 11 ~ .$hour + 15
+  ))
+
+only_male_w_centered_hour
+
+for_dist <- only_male_w_centered_hour %>% uncount(n) %>% pull(hour_centered)
+
+fit <- fitdistr(for_dist, "weibull")
+ignore <- class(fit)
+
+para <- fit$estimate
+
+hist(for_dist, prob = TRUE)
+curve(dweibull(x, para[1], para[2]), col = 2, add = TRUE)
+
+para
+
+```
+
+Both models are decent fits, but fail to capture that fewer crimes happen in the early morning hours (6-10).
+
+# Conclusion
+
+Noteworthy is that the data contains a lot more incidents with male than female perpetrators. The data itself can not tell us whether this is due to catching more male than female perpetrators, or that men indeed commit more crimes. This is a sort of bias, as our model will be better for men. Another potential bias is that the data is likely based on traditional gender identities. Presumably, gender is the biological gender. It could be that we would get different results if we were to use gender that the perpetrator identify as.
+
+The lower amount of data for female perpetrators means that the data for female perpetrators is less statistically robust. It might be influenced by outliers.
+
+However, this analysis does suggest that there's a difference in the time distribution of crimes for male and female perpetrators.
+
+Neither a normal distribution or weibull distribution model are perfect fits for the data, but do capture the general trend.
+
+# SessionInfo
+```{r sessionInfo}
+sessionInfo()
+```
